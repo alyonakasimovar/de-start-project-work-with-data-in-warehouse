@@ -1,190 +1,4 @@
-BEGIN;
-
-/* создание таблицы tmp_sources с данными из всех источников */
-DROP TABLE IF EXISTS tmp_sources;
-CREATE TEMP TABLE tmp_sources AS 
-SELECT  order_id,
-        order_created_date,
-        order_completion_date,
-        order_status,
-        craftsman_id,
-        craftsman_name,
-        craftsman_address,
-        craftsman_birthday,
-        craftsman_email,
-        product_id,
-        product_name,
-        product_description,
-        product_type,
-        product_price,
-        customer_id,
-        customer_name,
-        customer_address,
-        customer_birthday,
-        customer_email 
-  FROM source1.craft_market_wide
-UNION
-SELECT  t2.order_id,
-        t2.order_created_date,
-        t2.order_completion_date,
-        t2.order_status,
-        t1.craftsman_id,
-        t1.craftsman_name,
-        t1.craftsman_address,
-        t1.craftsman_birthday,
-        t1.craftsman_email,
-        t1.product_id,
-        t1.product_name,
-        t1.product_description,
-        t1.product_type,
-        t1.product_price,
-        t2.customer_id,
-        t2.customer_name,
-        t2.customer_address,
-        t2.customer_birthday,
-        t2.customer_email 
-  FROM source2.craft_market_masters_products t1 
-    JOIN source2.craft_market_orders_customers t2 ON t2.product_id = t1.product_id AND t1.craftsman_id = t2.craftsman_id 
-UNION
-SELECT  t1.order_id,
-        t1.order_created_date,
-        t1.order_completion_date,
-        t1.order_status,
-        t2.craftsman_id,
-        t2.craftsman_name,
-        t2.craftsman_address,
-        t2.craftsman_birthday,
-        t2.craftsman_email,
-        t1.product_id,
-        t1.product_name,
-        t1.product_description,
-        t1.product_type,
-        t1.product_price,
-        t3.customer_id,
-        t3.customer_name,
-        t3.customer_address,
-        t3.customer_birthday,
-        t3.customer_email
-  FROM source3.craft_market_orders t1
-    JOIN source3.craft_market_craftsmans t2 ON t1.craftsman_id = t2.craftsman_id 
-    JOIN source3.craft_market_customers t3 ON t1.customer_id = t3.customer_id
-
--- Новый источник
-UNION
-SELECT  t1.order_id,
-        t1.order_created_date,
-        t1.order_completion_date,
-        t1.order_status,
-        t1.craftsman_id,
-        t1.craftsman_name,
-        t1.craftsman_address,
-        t1.craftsman_birthday,
-        t1.craftsman_email,
-        t1.product_id,
-        t1.product_name,
-        t1.product_description,
-        t1.product_type,
-        t1.product_price,
-        t1.customer_id,
-        t2.customer_name,
-        t2.customer_address,
-        t2.customer_birthday,
-        t2.customer_email 
-  FROM external_source.craft_products_orders t1 
-    JOIN external_source.customers t2 ON t1.customer_id = t2.customer_id;
-
-/* обновление существующих записей и добавление новых в dwh.d_craftsmans */
-MERGE INTO dwh.d_craftsman d
-USING (SELECT DISTINCT craftsman_name, craftsman_address, craftsman_birthday, craftsman_email FROM tmp_sources) t
-ON d.craftsman_name = t.craftsman_name AND d.craftsman_email = t.craftsman_email
-WHEN MATCHED THEN
-  UPDATE SET craftsman_address = t.craftsman_address, 
-craftsman_birthday = t.craftsman_birthday, load_dttm = current_timestamp
-WHEN NOT MATCHED THEN
-  INSERT (craftsman_name, craftsman_address, craftsman_birthday, craftsman_email, load_dttm)
-  VALUES (t.craftsman_name, t.craftsman_address, t.craftsman_birthday, t.craftsman_email, current_timestamp);
-
-/* обновление существующих записей и добавление новых в dwh.d_products */
-MERGE INTO dwh.d_product d
-USING (SELECT DISTINCT product_name, product_description, product_type, product_price FROM tmp_sources) t
-ON d.product_name = t.product_name AND d.product_description = t.product_description AND d.product_price = t.product_price
-WHEN MATCHED THEN
-  UPDATE SET product_type= t.product_type, load_dttm = current_timestamp
-WHEN NOT MATCHED THEN
-  INSERT (product_name, product_description, product_type, product_price, load_dttm)
-  VALUES (t.product_name, t.product_description, t.product_type, t.product_price, current_timestamp);
-
-/* обновление существующих записей и добавление новых в dwh.d_customer */
-MERGE INTO dwh.d_customer d
-USING (SELECT DISTINCT customer_name, customer_address, customer_birthday, customer_email FROM tmp_sources) t
-ON d.customer_name = t.customer_name AND d.customer_email = t.customer_email
-WHEN MATCHED THEN
-  UPDATE SET customer_address= t.customer_address, 
-customer_birthday= t.customer_birthday, load_dttm = current_timestamp
-WHEN NOT MATCHED THEN
-  INSERT (customer_name, customer_address, customer_birthday, customer_email, load_dttm)
-  VALUES (t.customer_name, t.customer_address, t.customer_birthday, t.customer_email, current_timestamp);
-
-/* создание таблицы tmp_sources_fact */
-DROP TABLE IF EXISTS tmp_sources_fact;
-CREATE TEMP TABLE tmp_sources_fact AS 
-SELECT  dp.product_id,
-        dc.craftsman_id,
-        dcust.customer_id,
-        src.order_created_date,
-        src.order_completion_date,
-        src.order_status,
-        current_timestamp 
-FROM tmp_sources src
-JOIN dwh.d_craftsman dc ON dc.craftsman_name = src.craftsman_name AND dc.craftsman_email = src.craftsman_email 
-JOIN dwh.d_customer dcust ON dcust.customer_name = src.customer_name AND dcust.customer_email = src.customer_email 
-JOIN dwh.d_product dp ON dp.product_name = src.product_name AND dp.product_description = src.product_description AND dp.product_price = src.product_price;
-
-/* обновление существующих записей и добавление новых в dwh.f_order */
-MERGE INTO dwh.f_order f
-USING tmp_sources_fact t
-ON f.product_id = t.product_id AND f.craftsman_id = t.craftsman_id AND f.customer_id = t.customer_id AND f.order_created_date = t.order_created_date 
-WHEN MATCHED THEN
-  UPDATE SET order_completion_date = t.order_completion_date, order_status = t.order_status, load_dttm = current_timestamp
-WHEN NOT MATCHED THEN
-  INSERT (product_id, craftsman_id, customer_id, order_created_date, order_completion_date, order_status, load_dttm)
-  VALUES (t.product_id, t.craftsman_id, t.customer_id, t.order_created_date, t.order_completion_date, t.order_status, current_timestamp);
-
--- DDL витрины данных
-DROP TABLE IF EXISTS dwh.customer_report_datamart;
-
-create table if not exists dwh.customer_report_datamart (
-id bigint GENERATED ALWAYS AS IDENTITY NOT NULL, -- идентификатор записи
-customer_id bigint NOT NULL, -- идентификатор заказчика
-customer_name varchar NOT NULL, -- Ф. И. О. заказчика
-customer_address varchar NOT NULL, -- адрес заказчика
-customer_birthday date NOT NULL, -- дата рождения заказчика
-customer_email varchar NOT NULL, -- электронная почта заказчика
-customer_money numeric(15,2) NOT NULL, -- сумма, которую потратил заказчик
-platform_money bigint NOT NULL, -- сумма, которую заработала платформа от покупок заказчика за месяц (10% от суммы, которую потратил заказчик)
-count_order bigint NOT NULL, -- количество заказов у заказчика за месяц
-avg_price_order numeric (10,2) NOT NULL, -- средняя стоимость одного заказа у заказчика за месяц
-median_time_order_completed numeric(10,1), -- медианное время в днях от момента создания заказа до его завершения за месяц
-top_product_category varchar NOT NULL, -- самая популярная категория товаров у этого заказчика за месяц
-top_craftsman_id bigint NOT NULL, -- идентификатор самого популярного мастера ручной работы у заказчика (любой, если заказчик сделал одинаковое количество заказов у нескольких мастеров)
-count_order_created bigint NOT NULL, -- количество созданных заказов за месяц
-count_order_in_progress bigint NOT NULL, -- количество заказов в процессе изготовки за месяц
-count_order_delivery bigint NOT NULL, -- количество заказов в доставке за месяц
-count_order_done bigint NOT NULL, -- количество завершённых заказов за месяц
-count_order_not_done bigint NOT NULL, -- количество незавершённых заказов за месяц
-report_period varchar NOT NULL, -- отчётный период, год и месяц
-CONSTRAINT customer_report_datamart_pk PRIMARY KEY (id)
-);
-
--- DDL таблицы инкрементальных загрузок
-DROP TABLE IF EXISTS dwh.load_dates_customer_report_datamart;
-
-CREATE TABLE IF NOT EXISTS dwh.load_dates_customer_report_datamart (
-    id BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
-    load_dttm DATE NOT NULL,
-    CONSTRAINT load_dates_customer_report_datamart_pk PRIMARY KEY (id)
-);
-
+-- Инкрементальная загрузка данных в витрину
 WITH
 dwh_delta AS ( -- определяем, какие данные были изменены в витрине или добавлены в DWH. Формируем дельту изменений
     SELECT     
@@ -222,7 +36,7 @@ dwh_update_delta AS ( -- делаем выборку заказчиков, по 
                 WHERE dd.exist_customer_id IS NOT NULL        
 ),
 dwh_delta_insert_result AS ( -- делаем расчёт витрины по новым данным. Этой информации по заказчикам в рамках расчётного периода раньше не было, это новые данные. Их можно просто вставить (insert) в витрину без обновления
-    select DISTINCT ON (T5.customer_id)  
+    SELECT DISTINCT ON (T5.customer_id)  
             T5.customer_id AS customer_id,
             T5.customer_name AS customer_name,
             T5.customer_address AS customer_address,
@@ -373,7 +187,7 @@ dwh_delta_update_result AS ( -- делаем перерасчёт для сущ�
                                                     ORDER BY count_craftsman DESC) AS T4 ON T2.customer_id = T4.customer_id_for_craftsman_id                          
                 ) AS T5 WHERE
                 T5.rank_count_product = 1 -- условие помогает оставить в выборке первую по популярности категорию товаров
-                and T5.rank_count_craftsman = 1 -- условие помогает оставить в выборке первого по популярности мастера
+                AND T5.rank_count_craftsman = 1 -- условие помогает оставить в выборке первого по популярности мастера
                 ORDER BY T5.customer_id, report_period
 ),
 insert_delta AS ( -- выполняем insert новых расчитанных данных для витрины 
@@ -470,5 +284,3 @@ insert_load_date AS ( -- делаем запись в таблицу загру�
         FROM dwh_delta
 )
 SELECT 'increment datamart'; -- инициализируем запрос CTE
-
-COMMIT;
